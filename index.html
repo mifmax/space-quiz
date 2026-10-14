@@ -107,6 +107,10 @@
     .topline, .meta, .result-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .topline { margin-bottom: 10px; }
     .counter { color: var(--muted); font-size: 13px; font-weight: 700; }
+    .mode-switcher { display: flex; gap: 6px; margin-bottom: 16px; }
+    .mode-button { border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; background: var(--surface-solid); color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; font-weight: 800; }
+    .mode-button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+    .mode-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 40%, transparent); outline-offset: 2px; }
     .score {
       display: inline-flex;
       align-items: center;
@@ -119,6 +123,19 @@
       font-weight: 800;
     }
     .score::before { content: "★"; }
+    .timer {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .timer::before { content: "◷"; font-size: 16px; }
+    .timer.warning { background: var(--red-soft); color: var(--red); }
 
     .progress-track { height: 8px; margin-bottom: 34px; overflow: hidden; border-radius: 99px; background: var(--line); }
     .progress-fill { width: 10%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #36cba9); transition: width .45s cubic-bezier(.22, 1, .36, 1); }
@@ -214,6 +231,7 @@
     .share-status.success { color: var(--green); }
     .share-status.error { color: var(--red); }
     .hidden { display: none; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
     @keyframes shake { 20%, 60% { transform: translateX(-7px); } 40%, 80% { transform: translateX(7px); } }
     @keyframes float { 50% { transform: translateY(-8px) rotate(4deg); } }
@@ -225,10 +243,18 @@
     <section class="quiz-card" aria-live="polite">
       <div id="quiz-view">
         <p class="eyebrow">Orbit quiz</p>
+        <div class="mode-switcher" aria-label="Quiz mode">
+          <button class="mode-button" id="standard-mode" type="button" aria-pressed="true">Standard</button>
+          <button class="mode-button" id="timed-mode" type="button" aria-pressed="false">Timed · 15 sec</button>
+        </div>
         <div class="topline">
           <span class="counter" id="counter">Question 1 of 10</span>
-          <span class="score" id="score">0 pts</span>
+          <span class="meta">
+            <span class="timer hidden" id="timer">15s</span>
+            <span class="score" id="score">0 pts</span>
+          </span>
         </div>
+        <p class="sr-only" id="timer-announcement" role="status" aria-live="polite"></p>
         <div class="progress-track" aria-label="Quiz progress"><div class="progress-fill" id="progress"></div></div>
         <h1 id="question">Loading the cosmos…</h1>
         <div class="answers" id="answers"></div>
@@ -267,14 +293,21 @@
     let current = 0;
     let score = 0;
     let locked = false;
+    let timedMode = false;
+    let timerId = null;
+    let deadline = 0;
+    const TIME_LIMIT = 15;
     const $ = (id) => document.getElementById(id);
     const letters = ["A", "B", "C", "D"];
 
     function renderQuestion() {
       const item = questions[current];
       locked = false;
+      clearTimer();
       $("counter").textContent = `Question ${current + 1} of ${questions.length}`;
       $("score").textContent = `${score} ${score === 1 ? "pt" : "pts"}`;
+      $("timer").classList.toggle("hidden", !timedMode);
+      if (timedMode) startTimer();
       $("progress").style.width = `${((current + 1) / questions.length) * 100}%`;
       $("question").textContent = item.question;
       $("feedback").textContent = "";
@@ -287,19 +320,30 @@
 
     function chooseAnswer(button) {
       if (locked) return;
-      locked = true;
       const choice = Number(button.dataset.index);
+      resolveAnswer(button, false);
+    }
+
+    function resolveAnswer(button, timedOut) {
+      if (locked) return;
+      locked = true;
+      clearTimer();
       const item = questions[current];
-      const correct = choice === item.answer;
+      const correct = Boolean(button) && Number(button.dataset.index) === item.answer;
       document.querySelectorAll(".answer").forEach(answer => answer.disabled = true);
-      button.classList.add("selected", correct ? "correct" : "wrong");
-      button.setAttribute("aria-pressed", "true");
+      if (button) {
+        button.classList.add("selected", correct ? "correct" : "wrong");
+        button.setAttribute("aria-pressed", "true");
+      }
       if (!correct) document.querySelector(`[data-index="${item.answer}"]`).classList.add("correct");
       if (correct) {
         score++;
         $("score").textContent = `${score} ${score === 1 ? "pt" : "pts"}`;
         $("feedback").textContent = `Correct! ${item.fact}`;
         $("feedback").className = "feedback good";
+      } else if (timedOut) {
+        $("feedback").textContent = `Time expired — ${item.fact}`;
+        $("feedback").className = "feedback bad";
       } else {
         $("feedback").textContent = `Not quite — ${item.fact}`;
         $("feedback").className = "feedback bad";
@@ -310,7 +354,44 @@
       }, 1250);
     }
 
+    function updateTimer() {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      $("timer").textContent = `${remaining}s`;
+      $("timer").classList.toggle("warning", remaining <= 5);
+      if ([10, 5, 0].includes(remaining)) {
+        $("timer-announcement").textContent = remaining === 0 ? "Time expired." : `${remaining} seconds remaining.`;
+      }
+      if (remaining === 0) {
+        clearTimer();
+        resolveAnswer(null, true);
+      }
+    }
+
+    function startTimer() {
+      deadline = Date.now() + TIME_LIMIT * 1000;
+      updateTimer();
+      timerId = setInterval(updateTimer, 250);
+    }
+
+    function clearTimer() {
+      if (timerId !== null) {
+        clearInterval(timerId);
+        timerId = null;
+      }
+    }
+
+    function setMode(isTimed) {
+      timedMode = isTimed;
+      $("standard-mode").setAttribute("aria-pressed", String(!isTimed));
+      $("timed-mode").setAttribute("aria-pressed", String(isTimed));
+      current = 0;
+      score = 0;
+      renderQuestion();
+    }
+
     function showResults() {
+      clearTimer();
+      $("timer").classList.add("hidden");
       $("quiz-view").classList.add("hidden");
       $("results").classList.remove("hidden");
       $("share-status").textContent = "";
@@ -378,10 +459,16 @@
       await copyResult();
     }
 
+    $("standard-mode").addEventListener("click", () => setMode(false));
+    $("timed-mode").addEventListener("click", () => setMode(true));
     $("share-result").addEventListener("click", shareResult);
     $("restart").addEventListener("click", () => {
+      clearTimer();
       current = 0;
       score = 0;
+      timedMode = false;
+      $("standard-mode").setAttribute("aria-pressed", "true");
+      $("timed-mode").setAttribute("aria-pressed", "false");
       $("results").classList.add("hidden");
       $("quiz-view").classList.remove("hidden");
       renderQuestion();
