@@ -209,6 +209,10 @@
     .result-score { margin-bottom: 26px; color: var(--muted); }
     .result-score strong { color: var(--ink); font-size: 25px; }
     .result-message { max-width: 370px; margin: 0 auto 28px; color: var(--muted); }
+    .result-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+    .share-status { min-height: 24px; margin: 14px 0 0; color: var(--muted); font-size: 13px; font-weight: 700; }
+    .share-status.success { color: var(--green); }
+    .share-status.error { color: var(--red); }
     .hidden { display: none; }
 
     @keyframes shake { 20%, 60% { transform: translateX(-7px); } 40%, 80% { transform: translateX(7px); } }
@@ -237,7 +241,11 @@
         <h2 id="result-title">Stellar work!</h2>
         <p class="result-score">You scored <strong id="final-score">0 / 10</strong></p>
         <p class="result-message" id="result-message"></p>
-        <button class="button" id="restart" type="button">Play again</button>
+        <div class="result-actions">
+          <button class="button" id="share-result" type="button">Share result</button>
+          <button class="button secondary" id="restart" type="button">Play again</button>
+        </div>
+        <p class="share-status" id="share-status" role="status" aria-live="polite"></p>
       </div>
     </section>
   </main>
@@ -305,6 +313,8 @@
     function showResults() {
       $("quiz-view").classList.add("hidden");
       $("results").classList.remove("hidden");
+      $("share-status").textContent = "";
+      $("share-status").className = "share-status";
       $("final-score").textContent = `${score} / ${questions.length}`;
       const outcome = score === 10 ? ["🌟", "Cosmic genius!", "Perfect orbit. You clearly know your way around the universe."] :
         score >= 7 ? ["🚀", "Stellar work!", "Your space knowledge is ready for launch."] :
@@ -315,6 +325,60 @@
       $("result-message").textContent = outcome[2];
     }
 
+    function shareText() {
+      return `I scored ${score} out of ${questions.length} on the Orbit space exploration quiz! ${$("result-emoji").textContent}`;
+    }
+
+    function setShareStatus(message, type) {
+      $("share-status").textContent = message;
+      $("share-status").className = `share-status ${type}`;
+    }
+
+    async function copyResult() {
+      const text = shareText();
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const copyTarget = document.createElement("textarea");
+          copyTarget.value = text;
+          copyTarget.setAttribute("readonly", "");
+          copyTarget.style.position = "fixed";
+          copyTarget.style.opacity = "0";
+          document.body.appendChild(copyTarget);
+          copyTarget.select();
+          const copied = document.execCommand("copy");
+          copyTarget.remove();
+          if (!copied) throw new Error("Clipboard access was unavailable.");
+        }
+        setShareStatus("Result copied to your clipboard.", "success");
+      } catch (error) {
+        setShareStatus("Could not copy the result. Please try again.", "error");
+        console.error("Result copy failed:", error);
+      }
+    }
+
+    async function shareResult() {
+      const text = shareText();
+      if (typeof navigator.share === "function") {
+        try {
+          await navigator.share({ title: "Orbit space exploration quiz", text });
+          setShareStatus("Result shared successfully.", "success");
+          return;
+        } catch (error) {
+          if (error && error.name === "AbortError") {
+            setShareStatus("Sharing canceled.", "error");
+          } else {
+            setShareStatus("Could not share the result. Please try again.", "error");
+            console.error("Native share failed:", error);
+          }
+          return;
+        }
+      }
+      await copyResult();
+    }
+
+    $("share-result").addEventListener("click", shareResult);
     $("restart").addEventListener("click", () => {
       current = 0;
       score = 0;
